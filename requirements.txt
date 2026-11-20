@@ -1,3 +1,4 @@
+groq
 ollama
 streamlit>=1.38
 google-genai>=0.8
