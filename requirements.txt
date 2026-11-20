@@ -1,8 +1,8 @@
-groq
-ollama
 streamlit>=1.38
 google-genai>=0.8
 duckduckgo-search>=6.3
 fpdf2>=2.7
 python-dotenv>=1.0
 pypdf>=4.0
+ollama
+groq
