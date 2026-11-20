@@ -103,6 +103,9 @@ def read_files(files):
 
 # ---------- PROFESSIONAL PDF ----------
 
+
+# ---------- PROFESSIONAL PDF ----------
+
 def to_pdf(md):
 
     class ResearchPDF(FPDF):
@@ -118,9 +121,10 @@ def to_pdf(md):
             )
 
     pdf = ResearchPDF()
-    pdf.set_auto_page_break(True, 18)
+    pdf.set_margins(15, 15, 15)
+    pdf.set_auto_page_break(auto=True, margin=20)
 
-    # Cover page
+    # Cover Page
     pdf.add_page()
     pdf.set_fill_color(24, 25, 75)
     pdf.rect(0, 0, 210, 297, "F")
@@ -142,6 +146,7 @@ def to_pdf(md):
         align="C"
     )
 
+    # Report Pages
     pdf.add_page()
 
     for line in md.splitlines():
@@ -157,27 +162,34 @@ def to_pdf(md):
         if line.startswith("# "):
             pdf.set_font("Helvetica", "B", 19)
             pdf.set_text_color(60, 45, 150)
-            t = t[2:]
+            t = t[2:].strip()
 
         elif line.startswith("## "):
             pdf.ln(3)
             pdf.set_font("Helvetica", "B", 15)
             pdf.set_text_color(65, 60, 170)
-            t = t[3:]
+            t = t[3:].strip()
 
         elif line.startswith("###"):
             pdf.set_font("Helvetica", "B", 12)
             pdf.set_text_color(85, 65, 180)
-            t = t.lstrip("# ")
+            t = t.lstrip("# ").strip()
 
         else:
             pdf.set_font("Helvetica", "", 10)
             pdf.set_text_color(45, 45, 55)
 
-        pdf.multi_cell(0, 7, t)
+        # Safe text wrapping
+        pdf.set_x(pdf.l_margin)
+
+        pdf.multi_cell(
+            w=pdf.w - pdf.l_margin - pdf.r_margin,
+            h=7,
+            text=t,
+            wrapmode="CHAR"
+        )
 
     return bytes(pdf.output())
-
 
 # ---------- SIDEBAR ----------
 
