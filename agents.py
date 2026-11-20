@@ -1,168 +1,236 @@
-"""ResearchHive - 5 specialised agents (Planner, Researcher, Analyst, Fact-Checker, Writer)."""
 
+import os
 import re
 import time
-import ollama
+import streamlit as st
+from groq import Groq
 from duckduckgo_search import DDGS
 
-MODEL = "gemma2:2b"
+MODEL = "openai/gpt-oss-20b"
 
-
-# ---------- Local AI Connection ----------
 
 def llm(prompt: str, system: str, api_key=None, retries: int = 2) -> str:
+    key = api_key or os.getenv("GROQ_API_KEY")
 
+    if not key:
+        try:
+            key = st.secrets.get("GROQ_API_KEY", "")
+        except Exception:
+            key = ""
+
+    if not key:
+        raise RuntimeError("GROQ_API_KEY is missing. Add it in Streamlit Secrets.")
+
+    client = Groq(api_key=key)
     last = None
 
     for i in range(retries):
         try:
-
-            response = ollama.chat(
+            response = client.chat.completions.create(
                 model=MODEL,
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": prompt}
                 ],
-                options={
-                    "temperature": 0.4
-                }
+                max_completion_tokens=2048
             )
-
-            return response["message"]["content"].strip()
+            return response.choices[0].message.content.strip()
 
         except Exception as e:
             last = e
             time.sleep(2)
 
-    raise RuntimeError(
-        f"Ollama error. Make sure Ollama is running. Detail: {last}"
-    )
+    raise RuntimeError(f"Groq API error: {last}")
 
 
-# ---------- Web Search ----------
-
-def web_search(query: str, k: int = 3):
+def web_search(query, k=3):
+    results = []
 
     try:
-        with DDGS() as d:
+        with DDGS() as ddgs:
+            items = ddgs.text(query, max_results=k)
 
-            return [
-                {
-                    "title": x.get("title", ""),
-                    "url": x.get("href", ""),
-                    "snippet": x.get("body", "")
-                }
-                for x in d.text(query, max_results=k)
-            ]
+            for item in items:
+                results.append({
+                    "title": item.get("title", ""),
+                    "url": item.get("href", ""),
+                    "snippet": item.get("body", "")
+                })
 
     except Exception:
         return []
 
+    return results
 
-# ---------- Agent 1: Planner ----------
 
 def planner(topic, n, key=None):
+    prompt = f"""
+    Research Topic: {topic}
 
-    out = llm(
-        f"Topic: {topic}\nWrite exactly {n} focused research questions, one per line, numbered. No extra text.",
-        "You are a Research Planner agent. You break a topic into clear, non-overlapping research questions."
+    Create {n} important research questions.
+    Return only a numbered list.
+    """
+
+    result = llm(
+        prompt,
+        "You are an expert academic research planner.",
+        key
     )
 
-    qs = [
-        re.sub(r"^\s*\d+[\.\)]\s*", "", line).strip()
-        for line in out.splitlines()
-        if line.strip()
-    ]
+    questions = []
 
-    return qs[:n]
+    for line in result.splitlines():
+        line = re.sub(r"^\s*\d+[\.\)\-]\s*", "", line).strip()
 
+        if line:
+            questions.append(line)
 
-# ---------- Agent 2: Researcher ----------
+    return questions[:n]
+
 
 def researcher(topic, questions, key=None, docs=None):
+    all_sources = []
+    document_text = ""
 
-    sources = []
-    blocks = []
+    if docs:
+        for doc in docs:
+            if isinstance(doc, str):
+                document_text += "\n" + doc
+            else:
+                document_text += "\n" + str(doc)
 
-    for name, doc_text in (docs or []):
+    search_queries = questions if questions else [topic]
 
-        sources.append({
-            "title": f"Uploaded: {name}",
-            "url": "uploaded document",
-            "snippet": doc_text[:3000]
-        })
+    for question in search_queries:
+        results = web_search(question, k=3)
 
-    for q in questions:
+        for result in results:
+            if result["url"] and not any(
+                s["url"] == result["url"] for s in all_sources
+            ):
+                all_sources.append(result)
 
-        for s in web_search(f"{topic} {q}", 3):
+    source_text = ""
 
-            if s["url"] not in [x["url"] for x in sources]:
-                sources.append(s)
-
-    for i, s in enumerate(sources, 1):
-
-        blocks.append(
-            f"[{i}] {s['title']} ({s['url']})\n{s['snippet']}"
+    for i, source in enumerate(all_sources, 1):
+        source_text += (
+            f"\n[{i}] {source['title']}\n"
+            f"URL: {source['url']}\n"
+            f"Information: {source['snippet']}\n"
         )
 
-    context = "\n\n".join(blocks) or (
-        "No web results found. Use general knowledge and say so."
-    )
+    prompt = f"""
+    Research Topic: {topic}
+
+    Research Questions:
+    {questions}
+
+    Uploaded Documents:
+    {document_text[:10000]}
+
+    Web Research Sources:
+    {source_text}
+
+    Prepare detailed academic research notes.
+    Use information from the supplied documents and sources.
+    Add citations like [1], [2] where appropriate.
+    Do not invent facts or references.
+    """
 
     notes = llm(
-        f"Topic: {topic}\nQuestions:\n"
-        + "\n".join(f"- {q}" for q in questions)
-        + f"\n\nSources:\n{context}\n\n"
-        "Answer each question in 2-4 bullet points. Cite sources as [number].",
-        "You are a Researcher agent. Use ONLY the given sources when possible and cite them as [n]."
+        prompt,
+        "You are an academic research assistant. Provide accurate, organized research notes.",
+        key
     )
 
-    return notes, sources
+    return notes, all_sources
 
-
-# ---------- Agent 3: Analyst ----------
 
 def analyst(topic, notes, key=None):
+    prompt = f"""
+    Topic: {topic}
+
+    Research Notes:
+    {notes}
+
+    Analyze the research.
+    Identify important findings, patterns, strengths,
+    weaknesses, and conclusions.
+    """
 
     return llm(
-        f"Topic: {topic}\nResearch notes:\n{notes}\n\n"
-        "Produce markdown with: ### Key Themes, ### Opportunities, ### Challenges, ### Trends.",
-        "You are an Analyst agent. Find patterns and insights, stay faithful to the notes."
+        prompt,
+        "You are an expert academic research analyst.",
+        key
     )
 
-
-# ---------- Agent 4: Fact-Checker ----------
 
 def fact_checker(topic, notes, analysis, key=None):
+    prompt = f"""
+    Topic: {topic}
+
+    Research Notes:
+    {notes}
+
+    Analysis:
+    {analysis}
+
+    Check the claims for accuracy and consistency.
+    Identify unsupported claims, possible errors,
+    missing information, and limitations.
+    Do not claim external verification unless evidence is available.
+    """
 
     return llm(
-        f"Notes:\n{notes}\n\nAnalysis:\n{analysis}\n\n"
-        "Extract 5-7 important claims. Output ONLY a markdown table with columns: "
-        "| Claim | Verdict (Supported / Partially / Unverified) | "
-        "Confidence (High/Medium/Low) | Source [n] |",
-        "You are a strict Fact-Checker agent. Mark a claim Unverified if sources do not clearly support it."
+        prompt,
+        "You are a careful academic fact checker.",
+        key
     )
 
-
-# ---------- Agent 5: Writer ----------
 
 def writer(topic, questions, notes, analysis, facts, sources, key=None):
+    source_list = ""
 
-    body = llm(
-        f"Topic: {topic}\nQuestions: {questions}\nNotes:\n{notes}\n"
-        f"Analysis:\n{analysis}\nFact-check:\n{facts}\n\n"
-        "Write a professional research report in markdown with sections: "
-        "# Title, ## Executive Summary, ## Background, ## Key Findings, "
-        "## Analysis, ## Fact-Check Summary, ## Conclusion & Recommendations. "
-        "Keep [n] citations.",
-        "You are a Writer agent producing clear, academic-style reports."
-    )
+    for i, source in enumerate(sources, 1):
+        source_list += (
+            f"\n[{i}] {source.get('title', '')} - "
+            f"{source.get('url', '')}"
+        )
 
-    refs = "\n".join(
-        f"{i}. {s['title']} - {s['url']}"
-        for i, s in enumerate(sources, 1)
-    )
+    prompt = f"""
+    Research Topic: {topic}
 
-    return body + "\n\n## References\n" + (
-        refs or "No external sources were retrieved."
+    Research Questions:
+    {questions}
+
+    Research Notes:
+    {notes}
+
+    Analysis:
+    {analysis}
+
+    Fact Checking:
+    {facts}
+
+    Sources:
+    {source_list}
+
+    Write a complete academic research report.
+    Include:
+    1. Title
+    2. Introduction
+    3. Main Discussion
+    4. Analysis and Findings
+    5. Limitations
+    6. Conclusion
+    7. References
+
+    Use numbered citations matching the provided sources.
+    Do not invent references.
+    """
+
+    return llm(
+        prompt,
+        "You are a professional academic research writer. Write clear, well-structured reports.",
+        key
     )
